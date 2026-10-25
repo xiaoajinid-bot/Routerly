@@ -56,7 +56,7 @@ The repository root is the Vercel project root. Vercel builds the shared package
 
 Vercel selects Neon Postgres automatically for configuration and usage records. Apply `packages/service/migrations/0001-routerly-state.sql` once to the connected database before deploying. Configure `DATABASE_URL`, `ROUTERLY_SECRET_KEY` (64 hexadecimal characters), and `CRON_SECRET` in the Vercel project. Keep `ROUTERLY_SECRET_KEY` stable across deployments; it signs sessions and derives the credential-encryption key. Vercel adds `Authorization: Bearer <CRON_SECRET>` to scheduled requests.
 
-The hourly Vercel Cron calls `/api/cron/maintenance` to apply usage retention and remove records for deleted routers. Background timers and startup file migrations are skipped in the Vercel runtime. The existing `ROUTERLY_HOME` files are not imported automatically; a new Vercel database starts with default state. Vercel Functions do not provide durable local filesystem persistence.
+The daily Vercel Cron calls `/api/cron/maintenance` to apply usage retention and remove records for deleted routers. Background timers and startup file migrations are skipped in the Vercel runtime. The existing `ROUTERLY_HOME` files are not imported automatically; a new Vercel database starts with default state. Vercel Functions do not provide durable local filesystem persistence.
 
 The optional LLMLingua-2 optimizer requires a large native ONNX runtime. Vercel excludes that optional runtime from its function bundle to stay within platform limits, so the optimizer reports unavailable there. Standard Docker and self-hosted installs keep the optional dependency.
 
