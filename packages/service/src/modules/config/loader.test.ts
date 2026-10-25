@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('proper-lockfile', () => ({
   default: { lock: vi.fn() },
@@ -48,7 +48,15 @@ const mockChmod = vi.mocked(fs.chmod)
 const mockStat = vi.mocked(fs.stat)
 const mockLock = vi.mocked(lockfile.lock)
 
-afterEach(() => { vi.clearAllMocks() })
+beforeEach(() => {
+  vi.stubEnv('ROUTERLY_STORAGE_BACKEND', 'file')
+  vi.stubEnv('ROUTERLY_SECRET_KEY', '')
+})
+
+afterEach(() => {
+  vi.clearAllMocks()
+  vi.unstubAllEnvs()
+})
 
 describe('initConfigDirs', () => {
   it('creates config and data directories', async () => {
@@ -316,6 +324,22 @@ describe('appendUsageRecord', () => {
 })
 
 describe('getOrCreateSecret', () => {
+  it('uses a valid environment secret without touching the filesystem', async () => {
+    const secret = 'a'.repeat(64)
+    vi.stubEnv('ROUTERLY_SECRET_KEY', secret)
+
+    await expect(getOrCreateSecret()).resolves.toBe(secret)
+    expect(mockMkdir).not.toHaveBeenCalled()
+    expect(mockReadFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects a malformed environment secret', async () => {
+    vi.stubEnv('ROUTERLY_SECRET_KEY', 'too-short')
+
+    await expect(getOrCreateSecret()).rejects.toThrow(/64 hexadecimal characters/)
+    expect(mockReadFile).not.toHaveBeenCalled()
+  })
+
   it('returns existing secret from file', async () => {
     mockReadFile.mockResolvedValue('existing-secret\n' as any)
     const secret = await getOrCreateSecret()

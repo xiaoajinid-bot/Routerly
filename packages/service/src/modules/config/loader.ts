@@ -6,6 +6,8 @@ import type { ModelConfig, RouterConfig, UserConfig, RoleConfig, Settings, Usage
 import { CONFIG_PATHS } from '../../lib/paths.js';
 import { readUsageNdjson, writeUsageNdjson, appendUsageRecordsNdjson } from './usageNdjson.js';
 import { SECRET_KEYS } from './permission-guard.js';
+import { usesPostgresStorage } from './storage-mode.js';
+import { readConfigRow, writeConfigRow, updateConfigRow, pruneOrphanUsageRows } from './postgres-store.js';
 
 /** Mirrors audit/logger.ts AuditEntry — defined here to avoid circular import */
 export interface AuditEntry {
@@ -104,6 +106,9 @@ export async function readConfig<K extends keyof StoredTypeMap>(
   if (key === 'usage') {
     return (await readUsageNdjson()) as StoredTypeMap[K];
   }
+  if (usesPostgresStorage()) {
+    return (await readConfigRow(String(key), DEFAULTS[key])) as StoredTypeMap[K];
+  }
   const filePath = CONFIG_PATHS[key];
   try {
     let raw = await readFile(filePath, 'utf-8');
@@ -157,6 +162,10 @@ export async function writeConfig<K extends keyof StoredTypeMap>(
   // occasional, off the per-request hot path), just via the NDJSON writer.
   if (key === 'usage') {
     await writeUsageNdjson(data as UsageRecord[]);
+    return;
+  }
+  if (usesPostgresStorage()) {
+    await writeConfigRow(String(key), data);
     return;
   }
   const filePath = CONFIG_PATHS[key];
@@ -260,6 +269,9 @@ export async function updateConfig<K extends keyof StoredTypeMap>(
   if (key === 'usage') {
     throw new Error(`updateConfig does not support 'usage' — it is append-only NDJSON, see appendUsageRecords`);
   }
+  if (usesPostgresStorage()) {
+    return updateConfigRow(String(key), DEFAULTS[key] as StoredTypeMap[K], mutate);
+  }
   const filePath = CONFIG_PATHS[key];
   await mkdir(dirname(filePath), { recursive: true });
   try {
@@ -331,6 +343,10 @@ export async function appendUsageRecords(records: UsageRecord[]): Promise<void> 
  * file when something was actually removed. Returns the number removed.
  */
 export async function pruneOrphanUsage(): Promise<number> {
+  if (usesPostgresStorage()) {
+    const routers = await readConfig('routers');
+    return pruneOrphanUsageRows(new Set(routers.map((router) => router.id)));
+  }
   const [usage, routers] = await Promise.all([
     readConfig('usage'),
     readConfig('routers'),
@@ -342,11 +358,19 @@ export async function pruneOrphanUsage(): Promise<number> {
   return removed;
 }
 
-/**
- * Reads the signing secret from the config directory, generating one if it
- * does not exist yet. The file is created with mode 0600 (owner read/write only).
- */
+/** Uses a validated environment secret when configured; file generation remains the self-hosted default. */
 export async function getOrCreateSecret(): Promise<string> {
+  const configuredSecret = process.env['ROUTERLY_SECRET_KEY'];
+  if (configuredSecret) {
+    if (!/^[0-9a-f]{64}$/i.test(configuredSecret)) {
+      throw new Error('ROUTERLY_SECRET_KEY must be exactly 64 hexadecimal characters');
+    }
+    return configuredSecret.toLowerCase();
+  }
+  if (usesPostgresStorage()) {
+    throw new Error('ROUTERLY_SECRET_KEY is required when Postgres storage is enabled');
+  }
+
   const filePath = CONFIG_PATHS.secret;
   await mkdir(CONFIG_PATHS.config, { recursive: true });
   try {

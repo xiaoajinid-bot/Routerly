@@ -3,6 +3,13 @@ import { dirname } from 'node:path';
 import lockfile from 'proper-lockfile';
 import type { UsageRecord, UsageRetentionConfig } from '@routerly/shared';
 import { CONFIG_PATHS } from '../../lib/paths.js';
+import { usesPostgresStorage } from './storage-mode.js';
+import {
+  readUsageRows,
+  writeUsageRows,
+  appendUsageRows,
+  applyUsageRetentionRows,
+} from './postgres-store.js';
 
 // Same retry budget as writeConfig()'s lock in loader.ts — this file shares
 // the lock with that discipline: append and full-rewrite callers serialize
@@ -37,6 +44,7 @@ async function ensureFileExists(filePath: string): Promise<void> {
  * trailing-line tolerance to "catch any parse error").
  */
 export async function readUsageNdjson(): Promise<UsageRecord[]> {
+  if (usesPostgresStorage()) return readUsageRows();
   const filePath = CONFIG_PATHS.usage;
   let raw: string;
   try {
@@ -88,6 +96,10 @@ async function publishUsageNdjson(filePath: string, records: UsageRecord[]): Pro
  * sweep), never the per-request append path.
  */
 export async function writeUsageNdjson(records: UsageRecord[]): Promise<void> {
+  if (usesPostgresStorage()) {
+    await writeUsageRows(records);
+    return;
+  }
   const filePath = CONFIG_PATHS.usage;
   await ensureFileExists(filePath);
   let release: (() => Promise<void>) | undefined;
@@ -106,6 +118,10 @@ export async function writeUsageNdjson(records: UsageRecord[]): Promise<void> {
  */
 export async function appendUsageRecordsNdjson(records: UsageRecord[]): Promise<void> {
   if (records.length === 0) return;
+  if (usesPostgresStorage()) {
+    await appendUsageRows(records);
+    return;
+  }
   const filePath = CONFIG_PATHS.usage;
   await ensureFileExists(filePath);
   const lines = records.map((r) => JSON.stringify(r)).join('\n') + '\n';
@@ -134,6 +150,7 @@ export async function appendUsageRecordsNdjson(records: UsageRecord[]): Promise<
  */
 export async function applyUsageRetention(policy: UsageRetentionConfig): Promise<number> {
   if (!policy.maxAgeDays && !policy.maxSizeMb) return 0;
+  if (usesPostgresStorage()) return applyUsageRetentionRows(policy);
   const filePath = CONFIG_PATHS.usage;
   await ensureFileExists(filePath);
   let release: (() => Promise<void>) | undefined;

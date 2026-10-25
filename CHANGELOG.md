@@ -13,6 +13,9 @@ the change itself — never reconstructed after the fact. See
 
 ### New features
 
+**Vercel deployment with durable Neon storage**
+The Fastify service and dashboard can now run together on Vercel using Neon-backed configuration and usage storage. Docker and self-hosted installs remain file-backed by default. Vercel uses stable environment secrets and an authenticated daily Cron for maintenance. API, CLI, and dashboard contracts are unchanged. The optional LLMLingua-2 ONNX runtime stays available in normal installs and is excluded from the Vercel function bundle.
+
 **Router, Orchestrator, and Passthrough kinds**
 Projects are now Routers throughout the management API, CLI, dashboard, configuration, and usage records. A Router can be a standard model router, an Orchestrator that selects among candidate Routers, ordered by priority, with optional per-candidate limits, or a Passthrough Router that forwards requests unchanged with the client's upstream credential.
 

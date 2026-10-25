@@ -80,6 +80,21 @@ describe('usage module', () => {
       }
     })
 
+    it('does not start a background sweep in Vercel', async () => {
+      vi.useFakeTimers()
+      vi.stubEnv('VERCEL', '1')
+      try {
+        await usageModule.start!({} as never)
+        await vi.advanceTimersByTimeAsync(120_000)
+        expect(mockReadConfig).not.toHaveBeenCalled()
+        expect(mockApplyRetention).not.toHaveBeenCalled()
+      } finally {
+        await usageModule.stop!()
+        vi.useRealTimers()
+        vi.unstubAllEnvs()
+      }
+    })
+
     it('does not call applyUsageRetention when no retention policy is configured', async () => {
       mockReadConfig.mockResolvedValue({})
       try {

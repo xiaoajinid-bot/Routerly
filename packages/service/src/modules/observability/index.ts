@@ -5,6 +5,7 @@ import { startIntegrationRunner } from './runner.js';
 import { metricsRoutes } from './metrics.js';
 import { exportTrace } from './traces-export.js';
 import { TRACE_COMPLETED_TOPIC, type TraceCompletedEvent } from '../trace/publish.js';
+import { isVercelRuntime } from '../config/storage-mode.js';
 
 /**
  * Observability module: owns the real integrations implementation
@@ -34,6 +35,7 @@ export const observabilityModule = defineModule({
   // The 60s metric push runs for as long as this module does: turning the module
   // off has to stop the pushes too, not only the trace export.
   start() {
+    if (isVercelRuntime()) return;
     // ponytail: unref'd — the listening socket is what keeps the process alive.
     runner ??= startIntegrationRunner().unref();
   },

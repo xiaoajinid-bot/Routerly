@@ -18,6 +18,15 @@ Environment variables override corresponding settings from `settings.json` and a
 | `ROUTERLY_LOG_LEVEL` | `info` | Log verbosity. Overrides `logLevel` in settings. Values: `error`, `warn`, `info`, `debug` |
 | `NODE_ENV` | `development` | Set to `production` for production deployments (affects error verbosity and logging format) |
 
+## Vercel and Postgres Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ROUTERLY_STORAGE_BACKEND` | `postgres` on Vercel, `file` elsewhere | Select `postgres` or `file` explicitly. The Vercel runtime uses Postgres automatically unless this is set to `file`. |
+| `DATABASE_URL` | unset | Pooled Neon Postgres connection string. Required when Postgres storage is enabled; the Vercel Neon integration provides it. |
+| `ROUTERLY_SECRET_KEY` | required for Postgres storage | Stable 64-character hexadecimal root secret used for session signing and credential encryption. Do not rotate it without migrating stored credentials. |
+| `CRON_SECRET` | required for scheduled maintenance | Stable 64-character hexadecimal secret. Vercel Cron sends it as a Bearer token to the maintenance route. |
+
 ## MCP Server Variables
 
 These variables start the [MCP server](../concepts/mcp.md)'s stdio transport.

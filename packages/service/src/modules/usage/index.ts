@@ -7,6 +7,7 @@ import { readConfig } from '../config/loader.js'
 import { applyUsageRetention } from '../config/usageNdjson.js'
 import { flushTrace } from './pending.js'
 import { trackUsage } from './tracker.js'
+import { isVercelRuntime } from '../config/storage-mode.js'
 
 // Same shape as observability/index.ts's runner: a module-level unref'd
 // setInterval, cleared on stop(). Same 60s cadence as
@@ -73,6 +74,7 @@ export const usageModule: RouterlyModule = defineModule({
   // run on start (so a freshly-configured policy takes effect without
   // waiting a full interval), then on the interval until stop().
   async start() {
+    if (isVercelRuntime()) return
     await runRetentionSweep()
     // ponytail: unref'd — the listening socket is what keeps the process alive.
     sweepTimer ??= setInterval(() => { void runRetentionSweep() }, 60_000).unref()

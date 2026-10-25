@@ -19,6 +19,8 @@ import { enforceStartupGuard } from './modules/config/permission-guard.js';
 import { pingTelemetry } from './modules/telemetry/telemetry.js';
 import { updateChecker } from './modules/update-checker/update-checker.js';
 import { bootstrap } from './bootstrap/index.js';
+import { createCronRoutes } from './modules/cron/routes.js';
+import { isVercelRuntime, usesPostgresStorage } from './modules/config/storage-mode.js';
 import type { Kernel } from './core/index.js';
 
 // The modular kernel (0.4.0) is decorated onto the Fastify instance so later
@@ -32,12 +34,15 @@ declare module 'fastify' {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const { version: pkgVersion } = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8')) as { version: string };
+const packageJsonPath = isVercelRuntime()
+  ? join(process.cwd(), 'packages/service/package.json')
+  : join(__dirname, '../package.json');
+const { version: pkgVersion } = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version: string };
 
-export async function buildServer() {
+export async function buildServer(fastifyFactory: typeof Fastify = Fastify) {
   const settings = await readConfig('settings');
 
-  const fastify = Fastify({
+  const fastify = fastifyFactory({
     logger: {
       level: settings.logLevel,
       ...(process.env['NODE_ENV'] !== 'production'
@@ -52,9 +57,9 @@ export async function buildServer() {
   // Boots alongside Fastify; registers the config, provider, and catalog modules
   // so modules/config/loader.ts, modules/provider/registry.ts, and
   // modules/catalog/fetcher.ts+sync.ts are reachable via CONFIG_STORE,
-  // PROVIDER_REGISTRY, and CATALOG for later plans. loadSecret()/
-  // initConfigDirs() already ran in startServer() before buildServer(); none
-  // of the three modules does IO at register time, so this is order-safe.
+  // PROVIDER_REGISTRY, and CATALOG for later plans. The selected storage
+  // backend and secrets are initialized in startServer() before buildServer();
+  // none of the three modules does IO at register time, so this is order-safe.
   // Additive only, no existing registration is touched.
   const kernel = await bootstrap();
   fastify.decorate('kernel', kernel);
@@ -67,7 +72,9 @@ export async function buildServer() {
 
   // ─── Dashboard static files (served before auth plugin) ───────────────────
   if (settings.dashboardEnabled) {
-    const dashboardDist = join(__dirname, '../../dashboard/dist');
+    const dashboardDist = isVercelRuntime()
+      ? join(process.cwd(), 'packages/dashboard/dist')
+      : join(__dirname, '../../dashboard/dist');
     try {
       // Encapsulated plugin: static files + SPA fallback scoped to /dashboard
       await fastify.register(async function dashboardPlugin(scope) {
@@ -85,13 +92,15 @@ export async function buildServer() {
       fastify.get('/dashboard', async (_req, reply) => {
         return reply.redirect('/dashboard/');
       });
-    } catch {
+    } catch (error) {
+      if (isVercelRuntime()) throw error;
       fastify.log.warn('Dashboard dist not found — run `npm run build` in packages/dashboard first');
     }
   }
 
   // ─── Dashboard REST API (auth handled inside the plugin) ─────────────────
   await fastify.register(apiRoutes);
+  await fastify.register(createCronRoutes());
 
   // ─── LLM Proxy auth (only for /v1/* routes) ───────────────────────────────
   await fastify.register(authPlugin);
@@ -124,13 +133,13 @@ export async function buildServer() {
   return fastify;
 }
 
-export async function startServer() {
-  await initConfigDirs();
+export async function startServer(fastifyFactory: typeof Fastify = Fastify) {
+  if (!usesPostgresStorage()) await initConfigDirs();
 
   // Permission guard runs first, before anything else reads or writes a
   // config file (including both migrations below) — an unsafe secrets file
   // must block startup before its content is ever touched.
-  await enforceStartupGuard();
+  if (!usesPostgresStorage()) await enforceStartupGuard();
 
   // Runs here, before anything else touches CONFIG_PATHS.routers, and
   // deliberately NOT inside configModule.migrate() (which the kernel wraps in
@@ -142,10 +151,12 @@ export async function startServer() {
   // migrated") on every future restart, even once the operator fixes the
   // file. See validator report .claude/specs/0.4.1/03-validation/RTR-01.md,
   // iteration 2, finding B2.
-  const storageMigrated = await migrateRouterStorage();
-  if (storageMigrated !== undefined) {
-    // eslint-disable-next-line no-console
-    console.log(`[startup] migrated ${storageMigrated} router(s) from projects.json to routers.json`);
+  if (!usesPostgresStorage()) {
+    const storageMigrated = await migrateRouterStorage();
+    if (storageMigrated !== undefined) {
+      // eslint-disable-next-line no-console
+      console.log(`[startup] migrated ${storageMigrated} router(s) from projects.json to routers.json`);
+    }
   }
 
   // Same reasoning and same placement as migrateRouterStorage() above,
@@ -153,17 +164,19 @@ export async function startServer() {
   // usage.json must fail loudly (EC2) and stop the boot, not start the
   // service on partial/corrupted usage data. See RTR-06 remediation,
   // .claude/specs/0.4.1/03-validation/RTR-06.md, finding B1.
-  const migratedUsage = await migrateUsageToNdjson();
-  if (migratedUsage > 0) {
-    // eslint-disable-next-line no-console
-    console.log(`[startup] migrated ${migratedUsage} usage record(s) from usage.json to usage.ndjson`);
+  if (!usesPostgresStorage()) {
+    const migratedUsage = await migrateUsageToNdjson();
+    if (migratedUsage > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[startup] migrated ${migratedUsage} usage record(s) from usage.json to usage.ndjson`);
+    }
   }
 
   await loadSecret();
   await loadCredentialKey();
   const settings = await readConfig('settings');
 
-  if (settings.telemetry?.enabled === true) {
+  if (!isVercelRuntime() && settings.telemetry?.enabled === true) {
     const { installId, lastPingedVersion } = settings.telemetry;
     const event: 'install' | 'upgrade' | null =
       !lastPingedVersion ? 'install' :
@@ -191,28 +204,33 @@ export async function startServer() {
   // record, which pruneOrphanUsage would then read as an orphan and
   // delete). Keeping pruneOrphanUsage() after buildServer() (and therefore
   // after the migration above) preserves that ordering.
-  const server = await buildServer();
+  const server = await buildServer(fastifyFactory);
 
-  const orphansRemoved = await pruneOrphanUsage();
-  if (orphansRemoved > 0) {
-    // eslint-disable-next-line no-console
-    console.log(`[startup] pruned ${orphansRemoved} orphan usage record(s) (no matching router)`);
+  if (!isVercelRuntime()) {
+    const orphansRemoved = await pruneOrphanUsage();
+    if (orphansRemoved > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[startup] pruned ${orphansRemoved} orphan usage record(s) (no matching router)`);
+    }
   }
 
   try {
-    await server.listen({ port: settings.port, host: settings.host });
+    await server.listen({ port: Number(process.env['PORT'] ?? settings.port), host: settings.host });
     // The 60s integration push is started by the observability module (kernel start).
     // Skipped outside production by default: a dev checkout's package.json version
     // is never bumped by semantic-release on develop/main (see docs/contributing/
     // releasing.md's "unstamped tag" note), so it always lags the tag a release just
     // cut — comparing it would flag the instance actively building that release as
     // "outdated". ROUTERLY_FORCE_UPDATE_CHECK opts back in for testing the checker itself.
-    const updateCheckWanted = process.env['NODE_ENV'] === 'production' || process.env['ROUTERLY_FORCE_UPDATE_CHECK'] === 'true';
+    const updateCheckWanted = !isVercelRuntime() && (
+      process.env['NODE_ENV'] === 'production' || process.env['ROUTERLY_FORCE_UPDATE_CHECK'] === 'true'
+    );
     if (updateCheckWanted && process.env['ROUTERLY_DISABLE_UPDATE_CHECK'] !== 'true') {
       updateChecker.start(pkgVersion, settings.channel ?? 'latest');
     }
   } catch (err) {
     server.log.error(err);
+    if (isVercelRuntime()) throw err;
     process.exit(1);
   }
 }

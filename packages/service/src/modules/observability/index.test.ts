@@ -42,6 +42,21 @@ describe('observability module', () => {
     expect(mockFetch.mock.calls[0]![0]).toBe('http://hook.local');
   });
 
+  it('does not start a background metric push in Vercel', async () => {
+    vi.useFakeTimers()
+    vi.stubEnv('VERCEL', '1')
+    mockReadConfig.mockResolvedValue({ integrations: [] })
+    try {
+      await observabilityModule.start!({} as never)
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(mockReadConfig).not.toHaveBeenCalled()
+    } finally {
+      await observabilityModule.stop!()
+      vi.useRealTimers()
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('runs the metric push for as long as the module does', async () => {
     vi.useFakeTimers();
     mockReadConfig.mockResolvedValue({ integrations: [] });
