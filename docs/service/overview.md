@@ -13,10 +13,10 @@ The CLI and the dashboard both communicate with the running service over HTTP �
 
 ## Startup Sequence
 
-When the service starts it performs the following steps in order:
+In self-hosted mode, the service performs the following steps in order:
 
 1. **`initConfigDirs`** — Creates `~/.routerly/config/` and `~/.routerly/data/` if they do not exist.
-2. **`loadSecret`** — Reads the AES-256 encryption key from `~/.routerly/config/secret`, generating and persisting it automatically if missing. API keys are encrypted with this secret at rest.
+2. **`loadSecret`** — Reads the service root secret from `~/.routerly/config/secret`, generating and persisting it automatically if missing. The secret signs sessions and derives the AES-256-GCM key used to encrypt API credentials at rest.
 3. **`readConfig('settings')`** — Loads `settings.json`. Missing file → defaults are written and used.
 4. **`buildServer`** — Registers Fastify plugins, routes, and middleware in this order:
    - CORS (`@fastify/cors`)
@@ -50,6 +50,18 @@ Environment variables override `settings.json` — see [Environment Variables](.
 
 ---
 
+## Vercel Deployment
+
+The repository root is the Vercel project root. Vercel builds the shared package, service, and dashboard, then serves the dashboard and API from one Fastify deployment. The dashboard remains at `/dashboard/`; the management API, LLM proxy, and health check keep their existing `/api/*`, `/v1/*`, and `/health` paths.
+
+Vercel selects Neon Postgres automatically for configuration and usage records. Apply `packages/service/migrations/0001-routerly-state.sql` once to the connected database before deploying. Configure `DATABASE_URL`, `ROUTERLY_SECRET_KEY` (64 hexadecimal characters), and `CRON_SECRET` in the Vercel project. Keep `ROUTERLY_SECRET_KEY` stable across deployments; it signs sessions and derives the credential-encryption key. Vercel adds `Authorization: Bearer <CRON_SECRET>` to scheduled requests.
+
+The hourly Vercel Cron calls `/api/cron/maintenance` to apply usage retention and remove records for deleted routers. Background timers and startup file migrations are skipped in the Vercel runtime. The existing `ROUTERLY_HOME` files are not imported automatically; a new Vercel database starts with default state. Vercel Functions do not provide durable local filesystem persistence.
+
+The optional LLMLingua-2 optimizer requires a large native ONNX runtime. Vercel excludes that optional runtime from its function bundle to stay within platform limits, so the optimizer reports unavailable there. Standard Docker and self-hosted installs keep the optional dependency.
+
+---
+
 ## Health Check
 
 The service exposes a lightweight health endpoint at `GET /health`:
@@ -72,7 +84,7 @@ Returns HTTP 200 when the process is up and accepting connections. This endpoint
 
 ## Configuration Storage
 
-All state is stored as JSON files on disk — there is no external database. The base directory defaults to `~/.routerly/` and can be overridden with `$ROUTERLY_HOME`.
+Self-hosted installs store state as JSON files under `~/.routerly/` by default, or under `$ROUTERLY_HOME` when configured. Vercel deployments store configuration and append-only usage records in Neon Postgres instead of relying on a writable filesystem.
 
 ```
 ~/.routerly/
@@ -87,7 +99,7 @@ All state is stored as JSON files on disk — there is no external database. The
     └── usage.ndjson     # Append-only call records (tokens, cost, latency, outcome)
 ```
 
-All writes to config files use a file lock (`proper-lockfile`) to prevent concurrent corruption. Missing files are auto-created with their defaults on first read.
+In file-backed mode, config writes use a lock (`proper-lockfile`) to prevent concurrent corruption, and missing files are auto-created with defaults on first read. In Postgres mode, typed config updates are serialized with transaction-scoped advisory locks.
 
 ---
 
@@ -99,7 +111,7 @@ All writes to config files use a file lock (`proper-lockfile`) to prevent concur
 | `SIGINT` | Same as `SIGTERM` (Ctrl-C in a terminal) |
 | `SIGHUP` | Not specially handled — restart the process to reload config |
 
-Config changes made via the CLI or dashboard API take effect immediately (the service re-reads files on each request) without a restart, except for `port` and `host` which require a restart.
+Config changes made via the CLI or dashboard API take effect immediately (the service re-reads the active storage backend on each request) without a restart, except for `port` and `host` which require a restart.
 
 ---
 
