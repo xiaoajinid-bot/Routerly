@@ -215,7 +215,15 @@ export async function startServer(fastifyFactory: typeof Fastify = Fastify) {
   }
 
   try {
-    await server.listen({ port: Number(process.env['PORT'] ?? settings.port), host: settings.host });
+    const listenResult = server.listen({
+      port: Number(process.env['PORT'] ?? settings.port),
+      host: settings.host,
+    });
+    if (isVercelRuntime()) {
+      void listenResult.catch((err) => server.log.error(err));
+      return;
+    }
+    await listenResult;
     // The 60s integration push is started by the observability module (kernel start).
     // Skipped outside production by default: a dev checkout's package.json version
     // is never bumped by semantic-release on develop/main (see docs/contributing/

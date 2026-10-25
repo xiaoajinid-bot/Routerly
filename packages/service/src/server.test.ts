@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import Fastify from 'fastify'
 
 vi.mock('./modules/config/loader.js', () => ({
   initConfigDirs: vi.fn(),
@@ -56,7 +57,10 @@ function mockSettings(settings: unknown): void {
   )
 }
 
-afterEach(() => vi.clearAllMocks())
+afterEach(() => {
+  vi.clearAllMocks()
+  vi.unstubAllEnvs()
+})
 
 describe('buildServer', () => {
   it('builds a Fastify instance with dashboard disabled', async () => {
@@ -104,6 +108,30 @@ describe('buildServer', () => {
 })
 
 describe('startServer', () => {
+  it('does not await the listener in Vercel Functions', async () => {
+    vi.stubEnv('VERCEL', '1')
+    mockSettings({ logLevel: 'silent', dashboardEnabled: false, port: 3000, host: '0.0.0.0' } as any)
+
+    const listenError = new Error('listener failed')
+    const listen = vi.fn().mockRejectedValue(listenError)
+    const logError = vi.fn()
+    const fastify = {
+      register: vi.fn().mockResolvedValue(undefined),
+      get: vi.fn(),
+      listen,
+      log: { warn: vi.fn(), error: logError },
+      decorate: vi.fn(),
+      addHook: vi.fn(),
+      setNotFoundHandler: vi.fn(),
+    } as unknown as ReturnType<typeof Fastify>
+    const fastifyFactory = (() => fastify) as unknown as typeof Fastify
+
+    await expect(startServer(fastifyFactory)).resolves.toBeUndefined()
+    expect(listen).toHaveBeenCalledWith({ port: 3000, host: '0.0.0.0' })
+    await Promise.resolve()
+    expect(logError).toHaveBeenCalledWith(listenError)
+  })
+
   it('fires pingTelemetry install event on first start (no lastPingedVersion)', async () => {
     const settings: any = {
       logLevel: 'silent', dashboardEnabled: false,
